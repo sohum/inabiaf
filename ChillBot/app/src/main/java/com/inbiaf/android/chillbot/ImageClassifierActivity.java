@@ -4,23 +4,24 @@ import android.app.Activity;
 import android.graphics.Bitmap;
 import android.media.ImageReader;
 import android.os.Bundle;
+import android.text.LoginFilter;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
+import com.inbiaf.android.chillbot.classifier.ImageClassifier;
 import com.inbiaf.android.chillbot.classifier.Recognition;
 import com.inbiaf.android.chillbot.classifier.TensorFlowHelper;
 
 import org.tensorflow.lite.Interpreter;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
@@ -47,7 +48,7 @@ public class ImageClassifierActivity extends Activity {
      * TF model asset files
      */
     private static final String LABELS_FILE = "labels.txt";
-    private static final String MODEL_FILE = "chill-bot.tflite";
+    private static final String MODEL_FILE = "chill-bot.lite";
 
     private boolean mProcessing;
 
@@ -57,6 +58,8 @@ public class ImageClassifierActivity extends Activity {
 
     private Interpreter mTensorFlowLite;
     private List<String> mLables;
+
+    private ImageClassifier classifier;
 
     private CameraHandler mCameraHandler;
     private ImagePreprocessor mImagePreprocessor;
@@ -92,57 +95,39 @@ public class ImageClassifierActivity extends Activity {
      *              and power consuming.
      */
     private void doRecognize(Bitmap image) {
-        byte[][] confidencePerLabel = new byte[1][mLables.size()];
+        final Drinks drinksData = classifyFrame(image);
 
-        int[] intValues = new int[TF_INPUT_IMAGE_WIDTH * TF_INPUT_IMAGE_WIDTH];
-        ByteBuffer imgData = ByteBuffer.allocateDirect(
-                DIM_BATCH_SIZE * TF_INPUT_IMAGE_WIDTH * TF_INPUT_IMAGE_HEIGHT * DIM_PIXEL_SIZE);
-        imgData.order(ByteOrder.nativeOrder());
-
-        TensorFlowHelper.convertBitmapToByteBuffer(image, intValues, imgData);
-
-        mTensorFlowLite.run(imgData, confidencePerLabel);
-        for (int i = 0; i < confidencePerLabel[0].length; i++) {
-            Log.d("DevLogger", "Confidence = " + confidencePerLabel[0][i]);
+        if (drinksData != null) {
+            new Thread(new Runnable() {
+                public void run() {
+                    DatabaseReference database = FirebaseDatabase.getInstance().getReference();
+                    database.child("drinks").setValue(drinksData);
+                }
+            }).start();
         }
 
-        Collection<Recognition> results = TensorFlowHelper.getBestResults(confidencePerLabel, mLables);
+        StringBuilder displayResultsBuilder = new StringBuilder();
+        displayResultsBuilder.append("has coke = "+drinksData.coke).append("\n");
+        displayResultsBuilder.append("has perrier = "+drinksData.perrier).append("\n");
+        displayResultsBuilder.append("has diet coke = "+drinksData.dietCoke).append("\n");
+        displayResultsBuilder.append("has other = "+drinksData.other);
+        Log.d("DevLogger",displayResultsBuilder.toString());
+    }
 
-        boolean hasCoke = false;
-        boolean hasPerrier = false;
-        boolean hasOther = false;
+    /**
+     * Classifies a frame from the preview stream.
+     */
+    private Drinks classifyFrame(Bitmap bitmap) {
+        Log.d("DevLogger", "classifyFrame" +
+                "");
 
-        for (Recognition result : results) {
-            switch (result.getTitle()) {
-                case "cocacola":
-                    if (result.getConfidence() > 0.5) {
-                        hasCoke = true;
-                    }
-                    break;
-                case "perrier":
-                    if (result.getConfidence() > 0.5) {
-                        hasPerrier = true;
-                    }
-                    break;
-
-                case "other":
-                    if (result.getConfidence() > 0.5) {
-                        hasOther = true;
-                    }
-                    break;
-            }
+        if (classifier == null) {
+            Toast.makeText(this, "Uninitialized Classifier or invalid context.",
+                    Toast.LENGTH_SHORT);
+            return null;
         }
 
-        final Drinks drinksData = new Drinks(hasCoke, hasPerrier, hasOther);
-
-        new Thread(new Runnable() {
-            public void run() {
-                DatabaseReference database = FirebaseDatabase.getInstance().getReference();
-                database.child("drinks").setValue(drinksData);
-            }
-        }).start();
-
-        onPhotoRecognitionReady(results);
+        return classifier.classifyFrame(bitmap);
     }
 
     /**
@@ -192,6 +177,12 @@ public class ImageClassifierActivity extends Activity {
         mImage = findViewById(R.id.imageView);
         mResultText = findViewById(R.id.resultText);
         cameraButton = findViewById(R.id.camera_button);
+
+        try {
+            classifier = new ImageClassifier(this);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to initialize an image classifier. e = "+e.toString());
+        }
 
         updateStatus(getString(R.string.initializing));
         initCamera();
@@ -285,6 +276,11 @@ public class ImageClassifierActivity extends Activity {
             closeCamera();
         } catch (Throwable t) {
             // close quietly
+        }
+        try {
+            classifier.close();
+        } catch (Throwable t) {
+            //close quietly
         }
     }
 }
